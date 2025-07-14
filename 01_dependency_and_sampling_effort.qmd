@@ -1,0 +1,1067 @@
+---
+title: "Misunderstandings 1 and 2"
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fig-dpi: 320
+    fontsize: 1.2rem
+    linestretch: 1.4
+    linkcolor: "#82a6b3"
+    mainfont: "Source Sans Pro"
+toc: true
+number-sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, warning = FALSE, message = FALSE}
+#| code-fold: true
+#| code-summary: "We first load a few packages, and define a ggplot theme."
+# Packages
+  library(tidyverse)
+  library(igraph)
+  library(ggraph)
+  library(tidygraph)
+  library(cmdstanr)
+  library(tidybayes)
+
+# ggplot2 theme
+  theme <- theme_set(
+    theme_bw() +
+      theme(
+      panel.grid = element_blank(),
+      axis.ticks = element_blank()
+      ))
+```
+
+# Dependencies as a nuisance
+
+Below, we code up simple simulations corresponding to the different panels of Figure 1.
+
+## Sampling effort
+
+We start by drawing a Directed Acyclic Graph (DAG).
+Note that we represent unobserved variables that were not shown, or were left implicit, in the manuscript's figure.  
+
+::: {.cell}
+![](DAGs/a.png){fig-align="center" width="400"}
+
+**DAG illustrating the assumed causal structure of Figure 1A.**  
+Here, $y_{[a,b]}$ represents the observed number of interactions from $a$ to $b$;  
+$m_{[a,b]}$ is the true rate of interactions from $a$ to $b$;  
+$S_{[a]}$ and $S_{[b]}$ represent individual-level sampling efforts;  
+$S_{[a,b]}$ is the dyad-level sampling effort;  
+$\gamma_{[a]}$ is an unobserved variable affecting the tendency of an individual, $a$ to give more or fewer interactions across partners;  
+$\rho_{[a]}$ is an unobserved variable affecting the tendency of an individual, $a$, to receive more or fewer interactions across partners;  
+and $\tau$ is an unobserved variable affecting the tendency of an individual, $a$, to give more or fewer interactions to a specific partner, $b$.
+:::
+
+
+We then write a generative model corresponding to the DAG:
+
+$$
+\begin{align}
+f_{S_{[a]}} :  \hspace{0.5cm} &
+S_{[a]} \sim \mathrm{Uniform}(0, 10)\\
+f_{S_{[a, b]}} :  \hspace{0.5cm} &
+S_{[a, b]} = S_{[a]} + S_{[b]}\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(0, \sigma_{\gamma})\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(0, \sigma_{\rho})\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, \sigma_{\tau}) \\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(\delta + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]} \cdot S_{[a, b]})\\
+\end{align}
+$$
+
+```{r}
+scm.1 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 0.2, # Baseline interaction rate (intercept)
+  sigma_gamma = 0.1, # SD of gamma
+  sigma_rho = 0.1, # SD of rho
+  sigma_tau = 0.1 # SD of tau
+  ){
+  
+    ## Generate data
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      gamma = rnorm(N_ind, 0, sigma_gamma),
+      rho = rnorm(N_ind, 0, sigma_rho),
+      S = runif(N_ind, 0, 10)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      tau_ab = rnorm(N_dyad, 0, sigma_tau),
+      tau_ba = rnorm(N_dyad, 0, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A features
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho, S_a = S) %>%
+      
+      # Add B features
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho, S_b = S) %>%
+      
+      # Dyadic features, compute rate
+      mutate(S_ab = S_a + S_b,
+             m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab * S_ab),
+             y_ba = rpois(n(), m_ba * S_ab))
+    
+    ## Output
+    df %>%
+      return()
+  }
+```
+
+We run the function, and plot $y_{[a, b]}$ against $y_{[b, a]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+df1 <- scm.1()
+df1 %>%
+  ggplot(aes(y_ab, y_ba)) +
+  geom_point(
+    fill = '#628b96',
+    shape = 21,
+    color = "#f0f2f2",
+    size = 4,
+    alpha = 0.8
+  ) +
+  labs(x = expression(y["ab"]),
+       y = expression(y["ba"]))
+```
+
+In the following subsections, we follow the same workflow (DAG $\to$ generative model $\to$ plot synthetic data) for different causal structures.
+
+## Individual-level causal effects
+
+Directed Acyclic Graph:
+
+
+::: {.cell}
+![](DAGs/b.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="300"}
+
+**DAG illustrating the assumed causal structure of Figure 1B.** $X_{[a]}$ and $X_{[b]}$ are individual-level phenotypic features (*e.g.*, age, colouration).
+:::
+
+
+
+Associated generative model:
+
+$$
+\begin{align}
+f_{X} :  \hspace{0.5cm} &
+X_{[a]} \sim \mathrm{Normal}(0, \sigma_{X})\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(\beta_{\gamma} \cdot X_{[a]}, \sigma_{\gamma})\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(\beta_{\rho} \cdot X_{[a]}, \sigma_{\rho})\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, \sigma_{\tau}) \\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(\delta + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+\end{align}
+$$
+
+
+```{r}
+scm.2 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 1, # Baseline interaction rate (intercept)
+  beta_g = 0.7, # causal effect gamma
+  beta_r = 0.7, # causal effect rho
+  sigma_gamma = 0.2, # SD of gamma
+  sigma_rho = 0.2, # SD of rho
+  sigma_tau = 0.2 # SD of tau
+  ){
+  
+    ## Generate data
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      X = rnorm(N_ind),
+      gamma = rnorm(N_ind, beta_g * X, sigma_gamma),
+      rho = rnorm(N_ind, beta_r * X, sigma_rho)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      tau_ab = rnorm(N_dyad, 0, sigma_tau),
+      tau_ba = rnorm(N_dyad, 0, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A features
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho) %>%
+      
+      # Add B features
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho) %>%
+      
+      # Rate
+      mutate(m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab),
+             y_ba = rpois(n(), m_ba))
+    
+    ## Output
+    df %>%
+      return()
+  }
+```
+
+We run the function, and plot $y_{[a, b]}$ against $y_{[b, a]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+set.seed(666)
+df2 <- scm.2()
+df2 %>%
+  ggplot(aes(y_ab, y_ba))  +
+  geom_point(
+    fill = '#628b96',
+    shape = 21,
+    color = "#f0f2f2",
+    size = 4,
+    alpha = 0.8
+  ) +
+  labs(x = expression(y["ab"]),
+       y = expression(y["ba"]))
+```
+
+We show the number of observed interactions $y_{[a, b]}$ for five recipients $b$ (*x-axis*) and five actors $a$ (one colour per actor $a$).
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+# We run the function
+  set.seed(666)
+  df2.2 <- scm.2(
+      N_ind = 5,
+      sigma_gamma = 0.5,
+      beta_r = 0.2
+    )
+
+# Reorganise data
+  df2.2 %>% 
+    select(ind_a, ind_b, y_ab) %>%
+    rename(actor = ind_a,
+           Recipient = ind_b,
+           y = y_ab) %>%
+    bind_rows(
+      df2.2 %>% 
+        select(ind_a, ind_b, y_ba) %>%
+        rename(actor = ind_b,
+               Recipient = ind_a,
+               y = y_ba)) %>%
+    # Plot
+    ggplot(aes(x = Recipient, y = y,
+      group = as.factor(actor))) +
+    geom_line(aes(color = as.factor(actor)), linewidth = 1.25) +
+    geom_point(aes(fill = as.factor(actor)),
+      color = "#f0f2f2",
+      size = 4,
+      shape = 21,
+      stroke = 1) +
+    theme(
+      legend.position = "none",
+      panel.grid.major.x = element_line(color = "#ebe9df", linewidth = 0.3)) +
+    scale_color_manual(
+      values = c("#BF402B", "#FECD64", "#C5DAEF", "#2071B3", "#389E55")) +
+    scale_fill_manual(
+      values = c("#BF402B", "#FECD64", "#C5DAEF", "#2071B3", "#389E55"))
+```
+
+Then, the opposite: we show the number of observed interactions $y_{[a, b]}$ for five actors $a$ (*x-axis*) and five recipients $b$ (one colour per recipient $b$).
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+# We run the function
+  set.seed(666)
+  df2.3 <- scm.2(
+      N_ind = 5,
+      sigma_rho = 0.5,
+      beta_g = 0.2
+    )
+  
+# Reorganise data
+  df2.3 %>% 
+    select(ind_a, ind_b, y_ab) %>%
+    rename(Actor = ind_a,
+           recipient = ind_b,
+           y = y_ab) %>%
+    bind_rows(
+      df2.3 %>% 
+        select(ind_a, ind_b, y_ba) %>%
+        rename(Actor = ind_b,
+               recipient = ind_a,
+               y = y_ba)) %>%
+    
+    # Plot
+    ggplot(aes(x = Actor, y = y, group = as.factor(recipient))) +
+    geom_line(aes(color = as.factor(recipient)), linewidth = 1.25) +
+    geom_point(aes(fill = as.factor(recipient)),
+      color = "#f0f2f2",
+      size = 4,
+      shape = 21,
+      stroke = 1) +
+    theme(legend.position = "none",
+      panel.grid.major.x = element_line(color = "#ebe9df", linewidth = 0.3)) +
+    scale_color_manual(
+      values = c("#BF402B", "#FECD64", "#C5DAEF", "#2071B3", "#389E55")) +
+    scale_fill_manual(
+      values = c("#BF402B", "#FECD64", "#C5DAEF", "#2071B3", "#389E55"))
+```
+
+## Dyad-level causal effects
+
+Directed Acyclic Graph:
+
+::: {.cell}
+![](DAGs/c.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="300"}
+
+**DAG illustrating the assumed causal structure of Figure 1C.** $R_{[a]}$ and $R_{[b]}$ are the individual-level phenotypic features (*e.g.*, dominance rank), and $\Delta R_{|a, b|}$ is a dyad-level feature (*e.g.*, difference in rank).
+:::
+
+
+Associated generative model:
+
+$$
+\begin{align}
+f_{R} :  \hspace{0.5cm} &
+R_{[a]} \sim \mathrm{DUniform}(0, N)\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(0, \sigma_{\gamma})\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(0, \sigma_{\rho})\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(\beta_{R} \cdot (R_{[b]} - R_{[a]}), \sigma_{\tau}) \\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(\delta + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]})\\
+\end{align}
+$$
+
+```{r}
+scm.3 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural paramaters
+  delta = 2, # Baseline interaction rate (intercept)
+  beta = 1, # Effect of rank
+  sigma_gamma = 0.2, # SD of gamma
+  sigma_rho = 0.2, # SD of rho
+  sigma_tau = 0.2 # SD of tau
+  ){
+  
+    ## Generate data
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      R = (sample(c(1:N_ind), N_ind, replace = FALSE)) / N_ind,
+      gamma = rnorm(N_ind, 0, sigma_gamma),
+      rho = rnorm(N_ind, 0, sigma_rho)
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A features
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho, Ra = R) %>%
+      
+      # Add B featues
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho, Rb = R) %>%
+      
+      # dyadic features and compute rates
+      mutate(tau_ab = rnorm(N_dyad, beta * (Rb - Ra), sigma_tau),
+             tau_ba = rnorm(N_dyad, beta * (Ra - Rb), sigma_tau),
+             m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab),
+             y_ba = rpois(n(), m_ba))
+    
+    ## Output
+    df %>%
+      return()
+  }
+```
+
+We run the function, and plot $y_{[a, b]}$ against $y_{[b, a]}$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+set.seed(30)
+df3 <- scm.3()
+df3 %>%
+  ggplot(aes(y_ab, y_ba)) +
+  geom_point(
+    fill = '#628b96',
+    shape = 21,
+    color = "#f0f2f2",
+    size = 4,
+    alpha = 0.8
+  ) +
+  labs(x = expression(y["ab"]),
+       y = expression(y["ba"]))
+```
+
+## Dyadic reciprocity
+
+Directed Acyclic Graph:
+
+::: {.cell}
+![](DAGs/d.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="375"}
+
+**DAG illustrating the assumed causal structure of Figure 1D.**
+$y_{[a,b]}(t)$ represents the number of observed interactions from $a$ to $b$ at time $t$, and $y_{[a,b]}(t+1)$ the number of observed interactions from $a$ to $b$ at time $t+1$.
+:::
+
+
+Associated generative model:
+
+$$
+\begin{align}
+\text{For } t = 1:\\
+m_{[a, b, t]} &= 1\\
+m_{[b, a, t]} &= 1\\
+y_{[a, b, t]} &\sim \mathrm{Poisson}(m_{[a, b, t]})\\
+y_{[b, a, t]} &\sim \mathrm{Poisson}(m_{[b, a, t]})\\
+\\
+\text{For } t = 2, \dots, T:\\
+m_{[a, b, t]} &= m_{[a, b, t-1]} + \epsilon_{[a, b, t]} +
+\begin{cases}
++1 & \text{if } y_{[b, a, t-1]} > 4 
+\text{ and } m_{[a, b, t]} < K\\
+-1 & \text{otherwise.}
+\end{cases}\\
+y_{[a, b, t]} &\sim 
+\begin{cases}
+\mathrm{Poisson}(m_{[a, b, t]}) & \text{if } m_{[a, b, t]} > 1\\
+\mathrm{Poisson}(1) & \text{if }  m_{[a, b, t]} \leq 1
+\end{cases}\\
+\\
+m_{[b, a, t]} &= m_{[b, a, t-1]} + \epsilon_{[b, a, t]} +
+\begin{cases}
++1 & \text{if } y_{[a, b, t-1]} > 4
+\text{ and } m_{[b, a, t]} < K\\
+-1 & \text{otherwise.}
+\end{cases}\\
+y_{[b, a, t]} &\sim
+\begin{cases}
+\mathrm{Poisson}(m_{[b, a, t]})  & 
+\text{if } m_{[b, a, t]} > 1\\
+\mathrm{Poisson}(1)  & 
+\text{if }  m_{[b, a, t]} \leq 1
+\end{cases}\\
+\epsilon_{[a, b, t]}, \epsilon_{[b, a, t]} &\sim \mathrm{Normal}(0, 1.5)
+\end{align}
+$$
+
+```{r}
+scm.4 <- function(
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+  delta = 1, # Minimal and initial interaction rate
+  nb_loops = 500
+){
+
+  # Empty data frame with name and dyad id
+  basic_df <- tibble(
+    ind_a = t(combn(N_ind, 2))[, 1],
+    ind_b = t(combn(N_ind, 2))[, 2],
+    dyad = c(1:N_dyad)
+  )
+  
+  # Data frame at step t = 1
+  list <- list()
+  list[[1]] <- basic_df %>% mutate(
+    m_ab = rpois(N_dyad, delta),
+    m_ba = rpois(N_dyad, delta),
+    y_ab = rpois(N_dyad, m_ab),
+    y_ba = rpois(N_dyad, m_ba),
+    y_ab_z = (y_ab - mean(c(y_ab, y_ba))) / sd(c(y_ab, y_ba)),
+    y_ba_z = (y_ba - mean(c(y_ab, y_ba))) / sd(c(y_ab, y_ba)),
+    t = 1
+  )
+  
+  # Data frame at steps t > 1
+  for (i in 2:nb_loops) {
+    list[[i]] <- basic_df %>% mutate(
+      m_ab = list[[i - 1]]$m_ab +
+             ifelse(list[[i - 1]]$y_ba > 4 & list[[i - 1]]$m_ab < 10, 1, -1) +
+             rnorm(N_dyad, 0, 1.5),
+      m_ab = ifelse(m_ab < delta, delta, m_ab),
+      m_ba = list[[i - 1]]$m_ba +
+             ifelse(list[[i - 1]]$y_ab > 4 &
+             list[[i - 1]]$m_ba < 10, 1, -1) +
+             rnorm(N_dyad, 0, 1.5),
+      m_ba = ifelse(m_ba < delta, delta, m_ba),
+      y_ab = rpois(N_dyad, m_ab),
+      y_ba = rpois(N_dyad, m_ba),
+      y_ab_z = (y_ab - median(c(y_ab, y_ba))) / sd(c(y_ab, y_ba)),
+      y_ba_z = (y_ba - median(c(y_ab, y_ba))) / sd(c(y_ab, y_ba)),
+      t = i
+    )
+  } # i
+ list %>% bind_rows() %>% return() 
+} # fct
+```
+
+
+We run the function, and show  how the number of interactions in one direction $y_{[a, b]}$ (blue) and the opposite direction $y_{[b, a]}$ (yellow), on the *y-axis*, change as a function of time (*x-axis*) for 16 dyads (one per panel).
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+# Run the function
+  set.seed(2666)
+  df4 <- scm.4(nb_loops = 200)
+
+# Plot
+  df4 %>%
+  filter(dyad < 17) %>%
+      gather(direction, y, m_ab:m_ba) %>%
+      ggplot(aes(x = t, y = y, group = direction, color = as.factor(direction))) +
+      geom_line(alpha = 0.7) +
+      facet_wrap(~ dyad) +
+      scale_color_manual(values = c("#d3c94e", "#3d6a77")) +
+      theme(legend.position = "none",
+            strip.background = element_blank(), 
+            strip.text = element_blank()) +
+    labs(x = "Time", y = "")
+```
+
+We also plot $y_{[a, b]}$ against $y_{[b, a]}$ in a cross-sectional sample.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+df4 %>%
+  filter(t == 200) %>%
+  ggplot(aes(y_ab, y_ba)) +
+  geom_point(
+    fill = '#628b96',
+    shape = 21,
+    color = "#f0f2f2",
+    size = 4,
+    alpha = 0.8
+  ) +
+  labs(x = expression(y["ab"]),
+       y = expression(y["ba"]))
+```
+
+
+
+## Triadic closure
+
+Directed Acyclic Graph (note that we only showed a subset of it in the manuscript):
+
+::: {.cell}
+![](DAGs/e.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="425"}
+
+**DAG illustrating the assumed causal structure of Figure 1E.**
+For all triads $(a, b, c)$ in the population understudy, $y_{|a, b|}$ represents the number of (undirected) observed interactions between $a$ and $b$, $y_{|a, c|}$ the number of observed interactions between $a$ and $c$, and $y_{|b, c|}$ the number of observed interactions between $b$ and $c$.
+Like in the previous subsection, these variables are indexed by time $t$.
+:::
+
+
+Associated generative model:
+
+$$
+\begin{align}
+\text{For } t = 1\\
+\text{Step one:} & \hspace{1cm}
+y_{|a, b, t, 1|} \sim \mathrm{Bernoulli}(p_{\mathrm{initial}})\\
+\text{Step two:} & \hspace{1cm}
+y_{|a, b, t, 2|} = y_{|a, b, t, 1|}\\
+\\
+\text{For } t = 2, \dots, T\\
+\text{Step one:} & \hspace{1cm}
+y_{|a, b, t, 1|} \sim 
+\begin{cases}
+    \text{Bernoulli}(p_{0 \rightarrow 1}),
+    &\text{ if } y_{|a, b, t - 1, 2|} = 0\\
+    \text{Bernoulli}(p_{1 \rightarrow 0}),
+    &\text{ if } y_{|a, b, t - 1, 2|} = 1\\
+\end{cases}\\
+\text{Step two:} & \hspace{1cm}
+\text{\textbf{For }} N \text{ edges } y_{|a, b, t, 1|} = 1 \text{ selected at random}, \textbf{do}\\& \hspace{1.5cm} \text{Select an individual } c \text{ at random},\\
+& \hspace{2cm} \text{\textbf{If} } y_{|a, b, t, 1|} + y_{|a, c, t, 1|} + y_{|b, c, t, 1|} = 2 \text{, \textbf{then}}\\
+& \hspace{2.5cm} 
+\begin{cases}
+    y_{|a, b, t, 2|} = 1\\
+    y_{|a, c, t, 2|} = 1\\
+    y_{|b, c, t, 2|} = 1
+\end{cases}\\
+& \hspace{2cm} \textbf{else}\\
+& \hspace{2.5cm} 
+\begin{cases}
+    y_{|a, b, t, 2|} = y_{|a, b, t, 1|}\\
+    y_{|a, c, t, 2|} = y_{|a, c, t, 1|}\\
+    y_{|b, c, t, 2|} = y_{|b, c, t, 1|}
+\end{cases}\\
+& \hspace{2cm} \textbf{end if}\\
+& \hspace{1.5cm} \textbf{end for}
+\end{align}
+$$
+
+```{r}
+scm.5 <- function(
+    N_ind = 12, # Nb of individuals
+    N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+    N_triad = t(combn(N_ind, 3))[, 1] %>% length(), #Nb triads
+    p_initial = 0.2, # Inital proba of forming a tie y
+    p_sw_1_0 = (1/200), # switch from 1 to 0 (loss of tie)
+    p_sw_0_1 = (1/2000), # switch from 0 to 1 (new random tie)
+    n_l_i = 100, # Number of iterations i (time)
+    n_l_j = 15){ # Number of considered triads undergoing triadic closure 
+    
+### Create objects
+# Empty data frame with name and dyad id
+  basic_df <- tibble(
+    ind_a = t(combn(N_ind, 2))[, 1],
+    ind_b = t(combn(N_ind, 2))[, 2],
+    dyad = paste0(ind_a, "_", ind_b)
+  )
+  
+  list <- list() # list containing data frames at different t
+  list[[1]] <- list() # list containing data frames at different t
+  list[[2]] <- list() # list containing data frames at different t
+  d <- list
+
+### Iteration 1
+## Step 1
+# Edge generated with fixed probability
+  (list[[1]][[1]] <- basic_df %>% mutate(
+    y_ab = rbinom(N_dyad, 1, p_initial),
+    t = 1
+  ))
+    
+## STEP 2
+# No triangle closure during the first iteration
+  list[[2]][[1]] <- list[[1]][[1]]
+    
+### Iterations i
+  for (i in 2:n_l_i){
+    ## STEP 1
+    # Random creation and losses of tie
+    list[[1]][[i]] <- list[[2]][[i-1]] %>% mutate(
+      rs = runif(n(), 0, 1),
+      y_ab = case_when(
+        rs < p_sw_1_0 & y_ab == 1 ~ 0,
+        rs >= p_sw_1_0 & y_ab == 1 ~ 1,
+        rs < p_sw_0_1 & y_ab == 0 ~ 1,
+        rs >= p_sw_0_1 & y_ab == 0 ~ 0),
+      t = i
+    ) %>%
+      select(-rs)
+    
+    ## STEP 2
+    # Note that there is a non-null prob. that the same triad
+    # is selected twice in the same iteration, in which case
+    # nothing happens: the triad is already closed
+    for (j in 1:n_l_j){
+      # Randomly select one dyad a-b
+      (dyad_ab <- list[[1]][[i]] %>%
+         filter(y_ab == 1) %>%
+         slice_sample(n = 1))
+      
+      # Save the a and b's ids
+      (dyad_ab_ids <- dyad_ab %>%
+          select(ind_a, ind_b) %>%
+          unlist())
+      
+      # Sample one individual c among all their potential partners
+      (id_c <- sample(c(1:N_ind)[-c(dyad_ab_ids)], 1))
+      
+      # Select dyad a-c
+      (dyad_ac <- list[[1]][[i]] %>%
+          filter(dyad == paste0(id_c, "_", dyad_ab_ids[1]) |
+                   dyad == paste0(dyad_ab_ids[1], "_", id_c)))
+      
+      # Select dyad b-c
+      (dyad_bc <- list[[1]][[i]] %>%
+          filter(dyad == paste0(id_c, "_", dyad_ab_ids[2]) |
+                   dyad == paste0(dyad_ab_ids[2], "_", id_c)))
+      
+      ## Data frame at iteration i, step 2:
+      # If two out of the three edges exist, close the triangle
+      if (dyad_ab$y_ab + dyad_ac$y_ab + dyad_bc$y_ab == 2) {
+        list[[2]][[i]] <- list[[1]][[i]] %>%
+          mutate(y_ab = ifelse(dyad == dyad_ab$dyad |
+                                 dyad == dyad_ac$dyad |
+                                 dyad == dyad_bc$dyad, 
+                               1, y_ab))
+        # Otherwise, no change
+      } else {list[[2]][[i]] <- list[[1]][[i]]}
+    } # j
+  
+  # Reformat data
+  (d[[i]] <- list[[2]][[i]] %>%
+      select(- c(t, dyad)) %>%
+      rename(y = y_ab, ind_i = ind_a, ind_j = ind_b))
+  
+  
+  # Assign each triad...
+  d[[i]] <- tibble(
+    ind_a = t(combn(N_ind, 3))[, 1],
+    ind_b = t(combn(N_ind, 3))[, 2],
+    ind_c = t(combn(N_ind, 3))[, 3],
+    
+    # a tried ID
+    triad = c(1:N_triad)
+  ) %>%
+    left_join(d[[i]], by = c("ind_a" = "ind_i", "ind_b" = "ind_j")) %>%
+    rename(y_ab = y) %>%
+    
+    left_join(d[[i]], by = c("ind_b" = "ind_i", "ind_c" = "ind_j")) %>%
+    rename(y_bc = y) %>%
+    
+    left_join(d[[i]], by = c("ind_a" = "ind_i", "ind_c" = "ind_j")) %>%
+    rename(y_ac = y)
+  } 
+  
+  output <- list(
+    list = list,
+    d = d
+  )
+  
+  return(output)
+} # scm.5
+```
+
+We run the function:
+
+```{r}
+set.seed(123)
+df5 <- scm.5(N_ind = 12,
+             p_sw_1_0 = (1/180))
+```
+
+Plot social network:
+
+```{r, eval = FALSE}
+#| code-fold: true
+#| code-summary: "Show code:"
+library(animation)
+saveGIF({
+  for (i in 1:100) {
+    # Filter data to include only ties with y_ab == 1
+    ties <- subset(df5$list[[2]][[i]], y_ab == 1)
+    # Create a graph object
+    graph <- tbl_graph(edges = ties, directed = FALSE)
+    p <- ggraph(graph, 'linear', circular = TRUE) +
+      geom_edge_link(color = "#3A5B71") +
+      geom_node_point(
+        fill = '#3D485B',
+        shape = 21,
+        color = "#f0f2f2",
+        size = 5
+      ) +
+      labs(title = paste0("Time step ", i)) +
+      theme_void() 
+    print(p)
+  }
+}, interval = .2, movie.name = ".gif",
+ani.width = 1500, ani.height = 1500, ani.res = 600)
+```
+
+![](GIF.gif){.nostretch fig-align="center" bottom=0 left=50 right=50 width="500" height="510"}
+
+We then look at the association created by the causal process.
+Specifically, we plot the association between $y_{|a,b|}(t) + y_{|a,c|}(t)$ and $y_{|b,c|}(t)$.
+
+```{r}
+#| fig-width: 7
+#| fig-height: 4
+df5$d[[100]]$past_sum <- df5$d[[100]]$y_ab + df5$d[[100]]$y_ac
+
+df5$d[[100]] %>%
+  ggplot(aes(x = past_sum, y = y_bc)) +
+  geom_jitter(width = 0.1, height = 0.1, size = 4,
+              fill = "#628b96",
+               pch = 21,
+               colour = "white",
+               alpha = 0.4) +
+    scale_x_continuous(breaks = c(0, 1, 2), limits = c(-0.2, 2.2)) +
+  scale_y_continuous(breaks = c(0, 1), limits = c(-0.2, 1.2)) +
+  labs(x = "y_ab(t) + y_ac(t)",
+       y = "y_ac(t+1)")
+```
+
+# Uneven sampling
+
+In this section, we present a generative model, generate synthetic data from it, and compare the estimates from two different statistical models.
+In doing so, we show that failing to block the backdoor path on the DAG leads to a biased estimate for the causal effect of interest.
+
+Directed Acyclic Graph:
+
+::: {.cell}
+![](DAGs/f.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="600"}
+
+**DAG illustrating the assumed causal structure of Figure 2.** $X_{[a]}$ and $X_{[b]}$ are individual-level phenotypic features (*e.g.*, colouration);
+$S_{[a]}$ and $S_{[b]}$ represent individual-level sampling effort;  
+$S_{[a,b]}$ is the dyad-level sampling effort.
+:::
+
+
+Associated Generative Model:
+
+$$
+\begin{align}
+f_{X} :  \hspace{0.5cm} &
+X_{[a]} \sim \mathrm{Normal}(0, \sigma_{X})\\
+f_{S_{[a]}} :  \hspace{0.5cm} &
+S_{[a]} \sim \mathrm{LogNormal}(0.2 \cdot \exp (X_{[a]}), \sigma_{S})\\
+f_{S_{[a, b]}} :  \hspace{0.5cm} &
+S_{[a, b]} = S_{[a]} + S_{[b]}\\
+\\
+f_{\gamma} : \hspace{0.5cm} &
+\gamma_{[a]} \sim \mathrm{Normal}(\beta_{\gamma} \cdot X_{[a]}, \sigma_{\gamma})\\
+f_{\rho} :  \hspace{0.5cm} &
+\rho_{[a]} \sim \mathrm{Normal}(0, \sigma_{\rho})\\
+f_{\tau} :  \hspace{0.5cm} &
+\tau_{[a, b]} \sim \mathrm{Normal}(0, \sigma_{\tau}) \\
+\\
+f_{m} :  \hspace{0.5cm} &
+m_{[a, b]} = \mathrm{exp}(\delta + \gamma_{[a]} + \rho_{[b]} + \tau_{[a, b]})\\
+f_{y} :  \hspace{0.5cm} &
+y_{[a, b]} \sim \mathrm{Poisson}(m_{[a, b]} \cdot S_{[a, b]})\\
+\end{align}
+$$
+
+Code for the data simulation:
+
+```{r}
+scm.6 <- function(
+  # Observed features
+  N_ind = 20, # Nb of individuals
+  N_dyad = ((N_ind * N_ind) - N_ind) / 2, # Nb of dyads
+
+  # Structural parameters
+  delta = 0.2, # Baseline interaction rate (intercept)
+  beta_g = 0.5, # causal effect gamma
+  sigma_gamma = 0.1, # SD of gamma
+  sigma_rho = 0.1, # SD of rho
+  sigma_tau = 0.1 # SD of tau
+  ){
+  
+    ## Generate data
+    ID_features <- tibble(
+      ID = c(1:N_ind),
+      x = rnorm(N_ind),
+      gamma = rnorm(N_ind, beta_g * x, sigma_gamma),
+      rho = rnorm(N_ind, 0, sigma_rho),
+      S = rlnorm(N_ind, 0.2 * exp(x), 0.2),
+    )
+    
+    # Assign each directed dyad...
+    dyad_features <- tibble(
+      ind_a = t(combn(N_ind, 2))[, 1],
+      ind_b = t(combn(N_ind, 2))[, 2],
+      
+      # a dyad ID and tau for each direction
+      dyad = c(1:N_dyad),
+      tau_ab = rnorm(N_dyad, 0, sigma_tau),
+      tau_ba = rnorm(N_dyad, 0, sigma_tau)
+    )
+    
+    # Combine individual and dyadic features
+    df <- dyad_features %>%
+      # Add A features
+      left_join(ID_features, by = c("ind_a" = "ID")) %>%
+      rename(gamma_a = gamma, rho_a = rho, S_a = S,
+             x_a = x) %>%
+      
+      # Add B featues
+      left_join(ID_features, by = c("ind_b" = "ID")) %>%
+      rename(gamma_b = gamma, rho_b = rho, S_b = S,
+             x_b = x) %>%
+      
+      # Rate
+      mutate(S_ab = S_a + S_b,
+             m_ab = exp(delta + gamma_a + rho_b + tau_ab),
+             m_ba = exp(delta + gamma_b + rho_a + tau_ba)) %>%
+      
+      # Generate observations
+      mutate(y_ab = rpois(n(), m_ab * S_ab),
+             y_ba = rpois(n(), m_ba * S_ab))
+    
+    ## Output
+    df %>%
+      return()
+  }
+```
+
+We run the function above:
+
+```{r}
+set.seed(3666)
+df6 <- scm.6()
+d6 <- df6 %>% as.list()
+d6$N <- nrow(df6)
+d6$N_ind <- 20
+d6$N_dyad <- 190
+```
+
+Statistical models:
+
+```{r}
+# Stan model
+(m_6_adj <- cmdstan_model("./stan_models/adjusted_by_S.stan"))
+(m_6_unadj <- cmdstan_model("./stan_models/not_adjusted_by_S.stan"))
+```
+
+We run the statistical models:
+
+```{r, eval = FALSE}
+# Run model
+post_6_adj <- m_6_adj$sample(
+  data = d6,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  chains = 4,
+  parallel_chains = 4
+)
+
+post_6_adj %>% tidy_draws() %>% select(b_G) %>% pull() %>%
+  saveRDS("./fitted_models/m_6_adj.rds")
+
+# Run model
+post_6_unadj <- m_6_unadj$sample(
+  data = d6,
+  iter_warmup = 1000,
+  iter_sampling = 2000,
+  chains = 4,
+  parallel_chains = 4
+)
+
+post_6_unadj %>% tidy_draws() %>% select(b_G) %>% pull() %>%
+  saveRDS("./fitted_models/m_6_unadj.rds")
+```
+
+And plot the marginal posterior distribution of $\beta_{\gamma}$, for the two statistical models (adjusted by $S_{[a, b]}$ at the bottom, and non-adjusted at the top):
+
+```{r, warning = FALSE, message = FALSE}
+#| fig-width: 7
+#| fig-height: 4
+#| code-fold: true
+#| code-summary: "Show code:"
+tibble(
+  adj = readRDS("./fitted_models/m_6_adj.rds"),
+  unadj = readRDS("./fitted_models/m_6_unadj.rds")
+) %>%
+  gather(param, value, 1:2) %>%
+  ggplot(aes(x = value, y = param)) +
+    
+    # Theme and layout
+    theme_bw() +
+    labs(x = "", y = "", color = 'Percentile Interval') +
+    theme(
+      legend.position = "none",
+      axis.text.y = element_text(size = 6.5),
+      axis.text.x = element_text(vjust = -1.5),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(color = "#c2c2b0",
+                                        size = 0.3,
+                                        linetype = "dotted"),
+      strip.background = element_rect(fill = "white", color = "white")
+    ) +
+    geom_vline(xintercept = 0.5, color = "#b8b5ab", linewidth = 0.3, linetype = "dotted") + 
+  
+  # Slab
+  stat_slab(
+      slab_color = NA,
+      fill = "#a19987",
+      scale = 0.5,
+      normalize = "groups",
+      slab_alpha = 0.3,
+      density = "bounded",
+      trim = FALSE
+    ) +
+    
+    # Contour of slab
+    stat_slab(
+      slab_color = "#363533",
+      fill = NA,
+      slab_linewidth = 0.1,
+      scale = 0.5,
+      normalize = "groups",
+      slab_alpha = 0.75,
+      density = "bounded",
+      trim = FALSE
+    ) +
+      # Target values
+      geom_point(data = tibble(value = c(0.5, 0.5),
+                               param = c("unadj", "adj")),
+                 pch = 21,
+                 colour = "white",
+                 fill = "#42747f",
+                 size = 3)
+```
+
+
+We observe that the model that conditions on $S_{|a,b|}$ (`adj`, bottom) recovers the true effect (in blue), whereas the model that does not condition on $S_{|a,b|}$ (`unadj`, bottom) produces a biased estimate.
+
