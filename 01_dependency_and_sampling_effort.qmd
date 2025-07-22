@@ -615,7 +615,7 @@ df4 %>%
 
 ## Triadic closure
 
-Directed Acyclic Graph (note that we only showed a subset of it in the manuscript):
+Below, we represent the causal process with a DAG.
 
 ::: {.cell}
 ![](DAGs/e.png){.nostretch fig-align="center" bottom=0 left=50 right=50 width="425"}
@@ -624,6 +624,9 @@ Directed Acyclic Graph (note that we only showed a subset of it in the manuscrip
 For all triads $(a, b, c)$ in the population understudy, $y_{|a, b|}$ represents the number of (undirected) observed interactions between $a$ and $b$, $y_{|a, c|}$ the number of observed interactions between $a$ and $c$, and $y_{|b, c|}$ the number of observed interactions between $b$ and $c$.
 Like in the previous subsection, these variables are indexed by time $t$.
 :::
+
+Note that compared to the causal diagram in the manuscript, we show the process for all individuals in the triads ($y_{|ab|} \rightarrow y_{|bc|} \leftarrow y_{|ac|}$, $y_{|ac|} \rightarrow y_{|ab|} \leftarrow y_{|bc|}$, and $y_{|ab|} \rightarrow y_{|ac|} \leftarrow y_{|bc|}$).
+We do not explicitly represent the intermediate variables $k$ for clarity.
 
 
 Associated generative model:
@@ -835,19 +838,19 @@ Specifically, we plot the association between $y_{|a,b|}(t) + y_{|a,c|}(t)$ and 
 ```{r}
 #| fig-width: 7
 #| fig-height: 4
-df5$d[[100]]$past_sum <- df5$d[[100]]$y_ab + df5$d[[100]]$y_ac
+df5$d[[100]]$past_sum <- df5$d[[100]]$y_ab * df5$d[[100]]$y_ac
 
 df5$d[[100]] %>%
   ggplot(aes(x = past_sum, y = y_bc)) +
-  geom_jitter(width = 0.1, height = 0.1, size = 4,
+  geom_jitter(width = 0.1, height = 0.1, size = 5,
               fill = "#628b96",
                pch = 21,
                colour = "white",
-               alpha = 0.4) +
-    scale_x_continuous(breaks = c(0, 1, 2), limits = c(-0.2, 2.2)) +
+               alpha = 0.6) +
+    scale_x_continuous(breaks = c(0, 1), limits = c(-0.2, 1.2)) +
   scale_y_continuous(breaks = c(0, 1), limits = c(-0.2, 1.2)) +
-  labs(x = "y_ab(t) + y_ac(t)",
-       y = "y_ac(t+1)")
+  labs(x = "y_ab(t) × y_ac(t)",
+       y = "y_ac(t)")
 ```
 
 # Uneven sampling
